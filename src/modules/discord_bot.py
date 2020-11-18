@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 import logging
 import os
-from typing import List
+from typing import List, Optional
 
 import discord
 from discord import Member
@@ -12,12 +12,9 @@ from src.crud.firebase import Firebase
 from src.models.invitation import Invitation
 from src.models.team import Team
 from src.models.user import User as ModelUser
+from src.modules.either_catching import EitherCatching
 
 DB = Firebase()
-
-
-# at least:
-# DB = lambda: Firebase()
 
 class DiscordBot:
     def __init__(self):
@@ -75,27 +72,18 @@ class DiscordBot:
 
     async def create_command(self, ctx):
         import src.texts.create_texts as texts
-
+        catcher = EitherCatching('create', ctx, texts)
         user = DB.get_user(discord_id=ctx.message.author.id)
-        if not user:
-            logging.info("[COMMAND CREATE - ERROR] Usuario no registrado")
-            await ctx.send(texts.NOT_REGISTERED_ERROR)
-            return
-        if user.group_name is not None or user.group_name != '':
-            logging.info("[COMMAND CREATE - ERROR] El usuario ya se encuentra en un grupo")
-            await ctx.send(texts.ALREADY_ON_GROUP_ERROR)
-            return
-        command = ctx.message.content.split()
-        if len(command) < 2:
-            logging.info("[COMMAND CREATE - ERROR] La sintaxis es incorrecta")
-            await ctx.send(texts.SINTAXIX_ERROR)
-            return
-        group = DB.get_group(group_name=' '.join(command[1:]))
-        if not group:
-            group = DB.recover_web_group(' '.join(command[1:]))
-        if group:
-            logging.info("[COMMAND CREATE - ERROR] El grupo indicado ya existe")
-            await ctx.send(texts.GROUP_ALREADY_EXISTS_ERROR)
+        try:
+            catcher.user_not_registered(user)
+            catcher.already_in_group(user)
+            command = ctx.message.content.split()
+            catcher.syntax_error(lambda x: len(x) < 2, command)
+            group = DB.get_group(group_name=' '.join(command[1:]))
+            if not group:
+                group = DB.recover_web_group(' '.join(command[1:]))
+            catcher.already_registered_team(group)
+        except ValueError as er:
             return
         await ctx.send(texts.STARTING_CREATE_GROUP)
         group = Team(' '.join(command[1:]), [ctx.message.author.id])
@@ -103,7 +91,6 @@ class DiscordBot:
         DB.create_or_update_group(group)
         guild = ctx.guild
         logging.info("[COMMAND CREATE - OK] Creando rol")
-
         await guild.create_role(name=group.name)
         role = discord.utils.get(ctx.guild.roles, name=group.name)
         logging.info("[COMMAND CREATE - OK] Añadiendo el usuario al rol")
@@ -159,11 +146,8 @@ class DiscordBot:
         from typing import Union
         username: str = ctx.author.name
         logging.info(f"Comando 'invite' recibido por usuario {username}")
-        team: Union[Team, bool] = DB.get_group(DB.get_user(ctx.author.id).group_name)
-        if not team:
-            logging.error(f"{ctx.author.name} no tiene grupo")
-            await ctx.send(txt.NOT_IN_GROUP)
-            return
+        team: Optional[Team] = DB.get_group(DB.get_user(ctx.author.id).group_name)
+
         people = list(map(lambda x: x.split('#'), ctx.message.content.split()[1:]))
         people: List[ModelUser] = list(map(lambda x: DB.get_user(username=x[0], discriminator=x[1]), people))
         if any(people):
